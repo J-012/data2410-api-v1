@@ -102,7 +102,36 @@ public class StudentsController(IConfiguration config) : ControllerBase
     {
         var studentsWithGrade = new List<Student>();
 
-        // Write code to calculate and update grades
+        using var conn = new SqlConnection(_connectionString);
+        await conn.OpenAsync();
+
+        using (var selectCmd = new SqlCommand("SELECT Id, Name, Course, Marks, Grade FROM Students", conn))
+        using (var reader = await selectCmd.ExecuteReaderAsync())
+        {
+            while (await reader.ReadAsync())
+            {
+                var student = new Student
+                {
+                    Id = reader.GetInt32(0),
+                    Name = reader.GetString(1),
+                    Course = reader.GetString(2),
+                    Marks = reader.GetInt32(3),
+                    Grade = reader.IsDBNull(4) ? null : reader.GetString(4)
+                };
+
+                student.Grade = GetGrade(student.Marks);
+                studentsWithGrade.Add(student);
+            }
+        }
+
+        foreach (var student in studentsWithGrade)
+        {
+            using var updateCmd = new SqlCommand(
+                "UPDATE Students SET Grade = @Grade WHERE Id = @Id", conn);
+            updateCmd.Parameters.AddWithValue("@Grade", student.Grade ?? (object)DBNull.Value);
+            updateCmd.Parameters.AddWithValue("@Id", student.Id);
+            await updateCmd.ExecuteNonQueryAsync();
+        }
 
         return studentsWithGrade;
     }
@@ -110,8 +139,43 @@ public class StudentsController(IConfiguration config) : ControllerBase
     [HttpGet("report")]
     public async Task<IActionResult> Report()
     {
-        // Write code for the report generation logic.
-        return Ok();
+        var report = new List<object>();
+
+        using var conn = new SqlConnection(_connectionString);
+        await conn.OpenAsync();
+
+        using var cmd = new SqlCommand(@"
+            SELECT
+                Course,
+                COUNT(*) AS TotalStudents,
+                CAST(AVG(CAST(Marks AS FLOAT)) AS DECIMAL(10,2)) AS AverageMarks,
+                SUM(CASE WHEN Grade = 'A' THEN 1 ELSE 0 END) AS ACount,
+                SUM(CASE WHEN Grade = 'B' THEN 1 ELSE 0 END) AS BCount,
+                SUM(CASE WHEN Grade = 'C' THEN 1 ELSE 0 END) AS CCount,
+                SUM(CASE WHEN Grade = 'D' THEN 1 ELSE 0 END) AS DCount
+            FROM Students
+            GROUP BY Course
+            ORDER BY Course", conn);
+
+        using var reader = await cmd.ExecuteReaderAsync();
+        while (await reader.ReadAsync())
+        {
+            report.Add(new
+            {
+                courseName = reader.GetString(0),
+                totalStudents = reader.GetInt32(1),
+                averageMarks = reader.GetDecimal(2),
+                gradeDistribution = new
+                {
+                    A = reader.GetInt32(3),
+                    B = reader.GetInt32(4),
+                    C = reader.GetInt32(5),
+                    D = reader.GetInt32(6)
+                }
+            });
+        }
+
+        return Ok(report);
     }
 
     [HttpDelete("{id}")]
